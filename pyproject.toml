@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "dvrprl"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+numpy = "^1.25.1"
+gymnasium = "^0.29.0"
+einops = "^0.6.1"
+networkx = "^3.1"
+matplotlib = "^3.7.2"
+ipykernel = "^6.24.0"
+pytest = "^7.4.0"
+torch = {version = "^2.0.1+cpu", source = "pytorch"}
+torchvision = {version = "^0.15.2+cpu", source = "pytorch"}
+tensorboard = "^2.13.0"
+
+
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
