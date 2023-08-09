@@ -65,15 +65,18 @@ class TSPEnv(gym.Env):
 
         self.step_count += 1
 
-        # visit each next node
+        # Convert the action chosen by the agent which will be from the unvisted
+        # to its true node number.
         action_as_features = self.get_state(remove_masked=True)[action]
         true_actions = self.get_state(remove_masked=False)
         action = np.where(np.all(true_actions == action_as_features, axis=1))[0][0]
 
+        # Update the visited nodes and the graph
         self.visited[action] = 1
         traversed_edge = [int(self.current_location), int(action)]
         self.sampler.visit_edge(traversed_edge[0], traversed_edge[1])
 
+        # Get the distance travelled to the next node
         distance_travelled = self.sampler.get_distance(
             traversed_edge[0], traversed_edge[1]
         )
@@ -84,7 +87,7 @@ class TSPEnv(gym.Env):
         else:
             n_new_nodes = np.squeeze(
                 np.random.poisson(distance_travelled)
-            )  # Change later to have a scaling param
+            )
 
         for _ in range(n_new_nodes):
             new_node_number = self.sampler.graph.number_of_nodes()
@@ -117,12 +120,16 @@ class TSPEnv(gym.Env):
             None,
         )
 
-    def is_done(self):
+    def is_done(self) -> bool:
         return np.all(self.visited == 1)
 
     def get_state(self, remove_masked=False) -> np.ndarray:
         """
         Getter for the current environment state
+
+        Args:
+            remove_masked: If True, the nodes that are masked
+            by the mask aren't included in the state.
 
         Returns:
             np.ndarray: Shape (num_graph, num_nodes, 4)
@@ -157,8 +164,8 @@ class TSPEnv(gym.Env):
         be visited in the next step according to the env dynamic.
 
         Returns:
-            np.ndarray: Returns mask for each (un)visitable node
-                in each graph. Shape (batch_size, num_nodes)
+            Returns mask for each (un)visitable node
+            in each graph. Shape (batch_size, num_nodes)
         """
         # disallow staying on a depot
         self.visited[self.depot] = 1
@@ -169,12 +176,12 @@ class TSPEnv(gym.Env):
 
         return self.visited
 
-    def reset(self) -> Union[ObsType, Tuple[ObsType, dict]]:
+    def reset(self) -> ObsType:
         """
         Resets the environment.
 
         Returns:
-            Union[ObsType, Tuple[ObsType, dict]]: State of the environment.
+            State of the environment.
         """
 
         self.step_count = 0
