@@ -1,5 +1,5 @@
 import numpy as np
-from tqdm import tqdm
+from tqdm.autonotebook import tqdm
 
 import gymnasium as gym
 import torch
@@ -23,7 +23,7 @@ class ReplayMemory:
         self.terminal_memory = [None for _ in range(capacity)]
         self.rng = np.random.default_rng(seed)
 
-    def store_transition(self, state, action, reward, next_state, done):
+    def store_transition(self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray, done: bool):
         """Store a transition in the replay memory."""
         index = self.memory_counter % self.capacity
         self.state_memory[index] = state
@@ -34,7 +34,7 @@ class ReplayMemory:
 
         self.memory_counter += 1
 
-    def sample(self, batch_size):
+    def sample(self, batch_size: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Randomly sample batch_size transitions from the replay memory. Transitions are sampled without replacement.
         """
@@ -65,7 +65,7 @@ class ReplayMemory:
 
         return padded_transitions
     
-    def __len__(self):
+    def __len__(self) -> int:
         """Return the number of transitions stored in the replay memory."""
         return min(self.memory_counter, self.capacity)
     
@@ -92,7 +92,7 @@ class DQNAgent:
         epsilon_decay = (epsilon - epsilon_min) / episodes
 
         tb_writer = SummaryWriter(logdir) if logdir is not None else None
-        history = {"episode_rewards": np.zeros(episodes), "epsilons": np.zeros(episodes), "episode_steps": np.zeros(episodes)}
+        history = {"episode_rewards": np.zeros(episodes), "epsilons": np.zeros(episodes), "episode_steps": np.zeros(episodes), "loss": np.zeros(episodes)}
 
         for episode in tqdm(range(episodes), ascii=True, unit="episode"):
             # Reset environment and get initial state
@@ -116,7 +116,7 @@ class DQNAgent:
                 step += 1
 
                 # Update replay memory
-                loss = self.update_replay_memory((current_state, action, reward, next_state, done))
+                self.update_replay_memory((current_state, action, reward, next_state, done))
 
                 self.update_networks(min_replay_memory_size=min_replay_memory_size, update_target_every=update_target_every, batch_size=batch_size, discount=discount, learning_rate=learning_rate)
 
@@ -131,7 +131,7 @@ class DQNAgent:
 
             # Update logs
             if logdir is not None and (episode+1) % save_freq == 0:
-                self.save_value_weights(f'{logdir}/value_weights_{i+1}.pth')
+                self.save_value_weights(f'{logdir}/value_weights_{episode+1}.pth')
             if tb_writer is not None:
                 tb_writer.add_scalar("episode_reward", episode_reward, episode)
                 tb_writer.add_scalar("epsilon", epsilon, episode)
@@ -144,7 +144,7 @@ class DQNAgent:
 
         return history
 
-    def update_networks(self, min_replay_memory_size, batch_size, discount, update_target_every, learning_rate,):
+    def update_networks(self, min_replay_memory_size: int, batch_size: int, discount: float, update_target_every: int, learning_rate: float,) -> float:
         
         # Start training only if certain number of samples is already saved
         if len(self.replay_memory) < min_replay_memory_size:
@@ -207,7 +207,7 @@ class DQNAgent:
         
         return loss.item()
     
-    def load_value_weights(self, path: str):
+    def load_value_weights(self, path: str) -> None:
         """
         Load the weights of the value network from the given path.
 
@@ -217,7 +217,7 @@ class DQNAgent:
         if self.value_network is not None:
             self.model.load_state_dict(torch.load(path))
     
-    def save_value_weights(self, path: str):
+    def save_value_weights(self, path: str) -> None:
         """
         Save the weights of the value network to the given path.
 

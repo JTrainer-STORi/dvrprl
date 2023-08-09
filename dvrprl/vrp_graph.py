@@ -1,30 +1,28 @@
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import matplotlib.pyplot as plt
 
 
 class VRPGraph:
-
     graph: nx.Graph = nx.Graph()
 
-    def __init__(self, num_nodes: int, num_depots: int, plot_demand: bool = False) -> None:
+    def __init__(self, num_nodes: int, num_depots: int) -> None:
         """
         Creates a fully connected graph with node_num nodes
         and depot num depots. Coordinates of each node
-        and the depot nodes will be samples randomly.
+        and the depot nodes will be sampled uniformly in the unit square.
 
         Args:
-            node_num: Number of nodes in the graph.
-            depot_num: Number of depots in the graph.
+            num_nodes: Number of nodes in the graph.
+            num_depots: Number of depots in the graph.
         """
         self.num_nodes = num_nodes
         self.num_depots = num_depots
-        self.plot_demand = plot_demand
 
-        # offset for node labels
+        # offset for demand node labels
         self.offset = offset = np.array([0, 0.065])
 
-        # generate graph and set node position
+        # generate graph and set node positions
         self.graph = nx.complete_graph(num_nodes)
         node_position = {
             i: coordinates for i, coordinates in enumerate(np.random.rand(num_nodes, 2))
@@ -153,4 +151,3 @@ class VRPGraph:
         node_two_pos = self.graph.nodes[node2_idx]["coordinates"]
 
         return np.linalg.norm(node_one_pos - node_two_pos)
-

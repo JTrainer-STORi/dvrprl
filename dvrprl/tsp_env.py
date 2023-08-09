@@ -1,11 +1,11 @@
 from typing import Tuple, Union
 
-import numpy as np
 import gymnasium as gym
+import numpy as np
 from gymnasium.wrappers.monitoring.video_recorder import VideoRecorder
 
-from dvrprl.vrp_graph import VRPGraph
 from dvrprl.common import ObsType
+from dvrprl.vrp_graph import VRPGraph
 
 
 class TSPEnv(gym.Env):
@@ -13,19 +13,18 @@ class TSPEnv(gym.Env):
     TSPEnv implements the Traveling Salesmen Problem
     a special variant of the vehicle routing problem.
 
-    State: Shape (batch_size, num_nodes, 4) The third
+    State: Shape (batch_size, num_unvisited_nodes, 4) The third
         dimension is structured as follows:
         [x_coord, y_coord, is_depot, visitable]
 
-    Actions: Depends on the number of nodes in every graph.
-        Should contain the node numbers to visit next for
-        each graph. Shape (batch_size, 1).
+    Actions:
+    Action is a choice of the next unvisited node to visit.
 
     Reward: -(distance travelled) in the graph between the current node
         and the next visited node dictated by the action.
 
     Done: True if all nodes have been visited. The distance travelled back
-    to the depot is not included in the reward but new customers cannot be
+    to the depot is included in the reward but new customers cannot be
     generated during this final return to the depot.
     """
 
@@ -38,11 +37,11 @@ class TSPEnv(gym.Env):
     ) -> None:
         """
         Args:
-            num_nodes: Number of nodes in each generated graph. Defaults to 32.
+            num_nodes: Number of nodes in each generated graph. Defaults to 20.
             seed: Seed of the environment. Defaults to 123.
         """
 
-        np.random.seed(seed)
+        self.default_rng = np.random.default_rng(seed)
 
         self.step_count = 0
         self.num_nodes = num_nodes
@@ -85,15 +84,13 @@ class TSPEnv(gym.Env):
         if traversed_edge[1] == self.depot:
             n_new_nodes = 0
         else:
-            n_new_nodes = np.squeeze(
-                np.random.poisson(distance_travelled)
-            )
+            n_new_nodes = np.squeeze(self.default_rng.poisson(distance_travelled))
 
         for _ in range(n_new_nodes):
             new_node_number = self.sampler.graph.number_of_nodes()
             self.sampler.graph.add_node(
                 new_node_number,
-                coordinates=np.squeeze(np.random.rand(1, 2)),
+                coordinates=self.default_rng.random(size=2),
                 depot=False,
                 node_color="black",
             )
@@ -123,7 +120,7 @@ class TSPEnv(gym.Env):
     def is_done(self) -> bool:
         return np.all(self.visited == 1)
 
-    def get_state(self, remove_masked=False) -> np.ndarray:
+    def get_state(self, remove_masked: bool = False) -> np.ndarray:
         """
         Getter for the current environment state
 
