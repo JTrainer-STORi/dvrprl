@@ -2,7 +2,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from tqdm.autonotebook import tqdm
+from tqdm.auto import tqdm
 
 
 def discount_rewards(rewards: list[float], gam: float) -> list[float]:
@@ -175,7 +175,7 @@ class Agent:
         policy_updates: int = 1,
         value_lr: float = 1e-3,
         value_network: torch.nn.Module = None,
-        value_updates: int = 1,
+        value_updates: int = 25,
         gamma: float = 0.99,
         lam: float = 0.95,
         normalize_advantages: bool = True,
@@ -279,9 +279,10 @@ class Agent:
             "delta_policy_loss": np.zeros(epochs),
             "policy_ent": np.zeros(epochs),
             "policy_kld": np.zeros(epochs),
+            "mean_mse": np.zeros(epochs),
         }
 
-        for i in tqdm(range(epochs), unit="epoch"):
+        for i in tqdm(range(epochs), unit="epoch", position=0, leave=True):
             self.buffer.clear()
             return_history = self.run_episodes(env, episodes, buffer=self.buffer)
             dataloader = self.buffer.get(
@@ -290,7 +291,9 @@ class Agent:
             policy_history = self._fit_policy_model(
                 dataloader, epochs=self.policy_updates
             )
-            value_history = self._fit_value_model(dataloader, epochs=self.value_updates)
+            if not self.value_network is None:
+                value_history = self._fit_value_model(dataloader, epochs=self.value_updates)
+                history["mean_mse"][i] = np.mean(value_history["loss"])
 
             history["mean_returns"][i] = np.mean(return_history["returns"])
             history["min_returns"][i] = np.min(return_history["returns"])
@@ -347,6 +350,10 @@ class Agent:
                 )
                 tb_writer.add_scalar("policy/policy_ent", history["policy_ent"][i], i)
                 tb_writer.add_scalar("policy/policy_kld", history["policy_kld"][i], i)
+
+                if not self.value_network is None:
+                    tb_writer.add_scalar("value/mse", history["mean_mse"][i], i)
+                    tb_writer.add_histogram("value/mse_distribution", value_history["loss"], i)
 
                 tb_writer.add_histogram("returns/returns", return_history["returns"], i)
                 tb_writer.add_histogram(
@@ -410,7 +417,7 @@ class Agent:
         """
 
         history = {"returns": np.zeros(episodes), "lengths": np.zeros(episodes)}
-        for i in tqdm(range(episodes), unit="episodes"):
+        for i in range(episodes):
             R, L = self.run_episode(env, buffer=buffer)
             history["returns"][i] = R
             history["lengths"][i] = L
@@ -513,9 +520,9 @@ class Agent:
         self.value_optimizer.zero_grad()
         values = torch.squeeze(self.value_network(states), dim=1)
         loss = self.value_loss(values, returns)
-        loss.mean().backward()
+        loss.backward()
         self.value_optimizer.step()
-        return loss.mean().item()
+        return loss.item()
 
     def load_value_weights(self, path: str) -> None:
         """
