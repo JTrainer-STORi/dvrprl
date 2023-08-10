@@ -72,7 +72,7 @@ class TSPEnv(gym.Env):
 
         # Update the visited nodes and the graph
         self.visited[action] = 1
-        traversed_edge = [int(self.current_location), int(action)]
+        traversed_edge = [int(self.current_location[0]), int(action)]
         self.sampler.visit_edge(traversed_edge[0], traversed_edge[1])
 
         # Get the distance travelled to the next node
@@ -104,7 +104,7 @@ class TSPEnv(gym.Env):
             )
             self.visited = np.append(self.visited, 0)
 
-        self.current_location = action
+        self.current_location = [action]
 
         if traversed_edge[1] != self.depot:
             self.generate_mask()
@@ -149,6 +149,12 @@ class TSPEnv(gym.Env):
 
         mask = self.generate_mask()
         trueidx = np.where(mask == 0)
+
+        state = np.hstack(
+            [self.sampler.node_positions,
+                np.repeat(self.sampler.node_positions[self.current_location], self.sampler.graph.number_of_nodes(), axis=0),
+            ]
+        )
 
         if remove_masked:
             return state[trueidx]
