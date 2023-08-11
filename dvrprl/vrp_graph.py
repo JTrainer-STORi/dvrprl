@@ -6,7 +6,7 @@ import numpy as np
 class VRPGraph:
     graph: nx.Graph = nx.Graph()
 
-    def __init__(self, num_nodes: int, num_depots: int) -> None:
+    def __init__(self, num_nodes: int, num_depots: int, rng: np.random.Generator) -> None:
         """
         Creates a fully connected graph with node_num nodes
         and depot num depots. Coordinates of each node
@@ -18,6 +18,7 @@ class VRPGraph:
         """
         self.num_nodes = num_nodes
         self.num_depots = num_depots
+        self.default_rng = rng
 
         # offset for demand node labels
         self.offset = offset = np.array([0, 0.065])
@@ -25,12 +26,12 @@ class VRPGraph:
         # generate graph and set node positions
         self.graph = nx.complete_graph(num_nodes)
         node_position = {
-            i: coordinates for i, coordinates in enumerate(np.random.rand(num_nodes, 2))
+            i: coordinates for i, coordinates in enumerate(rng.random((num_nodes, 2)))
         }
         nx.set_node_attributes(self.graph, node_position, "coordinates")
 
         # sample depots and set attributes
-        self.depots = np.random.choice(num_nodes, size=num_depots, replace=False)
+        self.depots = rng.choice(num_nodes, size=num_depots, replace=False)
         one_hot = np.zeros(num_nodes)
         one_hot[self.depots] = 1
         one_hot_dict = {i: depot for i, depot in enumerate(one_hot)}

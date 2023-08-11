@@ -41,7 +41,8 @@ class TSPEnv(gym.Env):
             seed: Seed of the environment. Defaults to 123.
         """
 
-        self.default_rng = np.random.default_rng(seed)
+        self.seed = seed
+        self.default_rng = np.random.default_rng(self.seed)
 
         self.step_count = 0
         self.num_nodes = num_nodes
@@ -200,6 +201,7 @@ class TSPEnv(gym.Env):
         self.sampler = VRPGraph(
             num_nodes=self.num_nodes,
             num_depots=1,
+            rng = self.default_rng,
         )
 
         # set current location to the depot
