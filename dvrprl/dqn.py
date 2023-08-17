@@ -87,9 +87,10 @@ class DQNAgent:
         """Add a transition to the replay memory."""
         self.replay_memory.store_transition(*transition)
    
-    def train(self, env: gym.Env, episodes: int = 20_000, min_replay_memory_size: int =1_000, update_target_every: int = 5, batch_size: int = 64, discount: float = 0.99, epsilon: float = 1, epsilon_min: float = 0.001, learning_rate: float = 1e-3, logdir=None, save_freq: int = 1000):
+    def train(self, env: gym.Env, episodes: int = 20_000, min_replay_memory_size: int =1_000, update_target_every: int = 5, batch_size: int = 64, discount: float = 0.99, epsilon: float = 1, epsilon_decay = None, epsilon_min: float = 0.001, learning_rate: float = 1e-3, logdir=None, save_freq: int = 10):
 
-        epsilon_decay = (epsilon - epsilon_min) / episodes
+        if not epsilon_decay:
+            epsilon_decay = (epsilon - epsilon_min) / episodes
 
         tb_writer = SummaryWriter(logdir) if logdir is not None else None
         history = {"episode_rewards": np.zeros(episodes), "epsilons": np.zeros(episodes), "episode_steps": np.zeros(episodes), "loss": np.zeros(episodes)}

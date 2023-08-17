@@ -4,6 +4,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
+torch.autograd.set_detect_anomaly(True)
 
 def discount_rewards(rewards: list[float], gam: float) -> list[float]:
     """
@@ -126,37 +127,37 @@ class PPOBuffer:
             advantages -= np.mean(advantages)
             advantages /= np.std(advantages) + 1e-8
 
-        if self.states and self.states[0].ndim == 2:
-            # Filter out states with only one action available
-            indices = [
-                i
-                for i in range(len(self.states[: self.path_start_idx]))
-                if self.states[i].shape[0] != 1
-            ]
-            states = [
-                torch.from_numpy(self.states[i]).to(torch.float32) for i in indices
-            ]
-            actions = actions[indices]
-            logprobs = logprobs[indices]
-            advantages = advantages[indices]
-            values = values[indices]
+        # if self.states and self.states[0].ndim == 2:
+        # Filter out states with only one action available
+        indices = [
+            i
+            for i in range(len(self.states[: self.path_start_idx]))
+            if self.states[i].shape[0] != 1
+        ]
+        states = [
+            torch.from_numpy(self.states[i]).to(torch.float32) for i in indices
+        ]
+        actions = actions[indices]
+        logprobs = logprobs[indices]
+        advantages = advantages[indices]
+        values = values[indices]
 
-            # Pad states to the same length
-            padded_states = torch.nn.utils.rnn.pad_sequence(
-                states, batch_first=True, padding_value=-1
-            )
+        # Pad states to the same length
+        padded_states = torch.nn.utils.rnn.pad_sequence(
+            states, batch_first=True, padding_value=-1
+        )
 
-            dataset = torch.utils.data.TensorDataset(
-                padded_states,
-                torch.from_numpy(actions),
-                torch.from_numpy(logprobs),
-                torch.from_numpy(advantages),
-                torch.from_numpy(values),
-            )
+        dataset = torch.utils.data.TensorDataset(
+            padded_states,
+            torch.from_numpy(actions),
+            torch.from_numpy(logprobs),
+            torch.from_numpy(advantages),
+            torch.from_numpy(values),
+        )
 
-            return torch.utils.data.DataLoader(
-                dataset, batch_size=batch_size, shuffle=False, drop_last=drop_last
-            )
+        return torch.utils.data.DataLoader(
+            dataset, batch_size=batch_size, shuffle=False, drop_last=drop_last
+        )
 
     def __len__(self) -> int:
         return len(self.states)
@@ -212,6 +213,7 @@ class Agent:
         self.kld_limit = kld_limit
         self.ent_bonus = ent_bonus
 
+    @torch.no_grad()
     def get_action(
         self, obs: np.ndarray, return_logprob: bool = False
     ) -> tuple[int, float]:
@@ -226,10 +228,8 @@ class Agent:
             float: Log probability of the action.
             float: Value of the state.
         """
-
         logpi = torch.squeeze(
-            self.policy_network(torch.from_numpy(obs).to(torch.float32).unsqueeze(0)),
-            (0, 2),
+            self.policy_network(torch.from_numpy(obs).to(torch.float32).unsqueeze(0))
         )
         action = torch.distributions.Categorical(logits=logpi).sample()
 
@@ -238,6 +238,7 @@ class Agent:
         else:
             return action.item()
 
+    @torch.no_grad()
     def get_value(self, obs: np.ndarray) -> float:
         """
         Return the predicted value for the given obs/state using the value model
@@ -378,7 +379,7 @@ class Agent:
             float: Total reward of the episode.
         """
 
-        obs = env.reset()
+        obs, _ = env.reset()
         done = False
         episode_length = 0
         total_reward = 0
@@ -388,13 +389,14 @@ class Agent:
                 value = 0.0
             else:
                 value = self.get_value(obs)
-            next_obs, reward, done, _ = env.step(action)
+            next_obs, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
             if render:
                 env.render()
             episode_length += 1
             total_reward += reward
             if buffer is not None:
-                buffer.store(obs, action, reward, value, logprob)
+                buffer.store(obs, action, reward, logprob, value)
             obs = next_obs
         if buffer is not None:
             buffer.finish()
@@ -470,11 +472,16 @@ class Agent:
 
         self.policy_optimizer.zero_grad()
         logpi = self.policy_network(states)
-        loss = self.policy_loss(logpi, logprobs, advantages)
+        new_logprobs = torch.sum(torch.nn.functional.one_hot(actions.type(torch.LongTensor), num_classes=logpi.shape[-1]) * logpi, dim=-1)
+        #print(torch.nn.functional.one_hot(actions.type(torch.LongTensor), num_classes=logpi.shape[-1]) * logpi)
+        #print(new_logprobs)
+        #print(logprobs)
+        #print(torch.exp(new_logprobs - logprobs))
+        loss = self.policy_loss(new_logprobs, logprobs, advantages)
         loss.mean().backward()
         self.policy_optimizer.step()
-        kld = (logprobs - logpi).mean()
-        ent = -logpi.mean()
+        kld = (logprobs - new_logprobs).mean()
+        ent = -new_logprobs.mean()
         return loss.mean().item(), kld.item(), ent.item()
 
     def load_policy_weights(self, path: str) -> None:

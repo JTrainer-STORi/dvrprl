@@ -56,7 +56,7 @@ class VRPGraph:
         """
         Draws the graph as a matplotlib plot.
         Depots are colored in red. Edges that have been
-        traveresed are colored in red. Nodes that have
+        traversed are colored in red. Nodes that have
         been visited are colored in grey.
         """
 

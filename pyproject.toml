@@ -8,7 +8,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.9"
 numpy = "^1.25.1"
-gymnasium = "^0.29.0"
+gymnasium = {extras = ["box2d"], version = "^0.29.0"}
 einops = "^0.6.1"
 networkx = "^3.1"
 matplotlib = "^3.7.2"
@@ -19,6 +19,7 @@ torchvision = {version = "^0.15.2+cpu", source = "pytorch"}
 tensorboard = "^2.13.0"
 tqdm = "^4.66.0"
 ipywidgets = "^8.1.0"
+gym = "^0.26.2"
 
 
 [[tool.poetry.source]]
