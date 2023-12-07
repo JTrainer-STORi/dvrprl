@@ -83,15 +83,6 @@ class VRPGraph:
             width=1.5,
         )
 
-        # draw demand above the node
-        if self.plot_demand:
-            demand_label_pos = {k: (v + self.offset) for k, v in pos.items()}
-            node_demand = nx.get_node_attributes(self.graph, "demand")
-            node_demand = {k: np.round(v, 2)[0] for k, v in node_demand.items()}
-            nx.draw_networkx_labels(
-                self.graph, demand_label_pos, labels=node_demand, ax=ax
-            )
-
         plt.show()
 
     def visit_edge(self, source_node: int, target_node: int) -> None:

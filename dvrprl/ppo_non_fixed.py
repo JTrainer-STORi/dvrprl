@@ -1,9 +1,9 @@
-# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
 import argparse
 import os
 import random
 import time
 from distutils.util import strtobool
+from einops import reduce
 
 import gymnasium as gym
 import numpy as np
@@ -12,10 +12,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
+from dvrprl.networks_cleanrl import ParallelMultilayerPerceptron, layer_init
 
-
+# Arg parser takes in arguments from the command line, these are saved to tensorboard with the run statistics for later reference.
 def parse_args():
-    # fmt: off
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp-name", type=str, default=os.path.basename(__file__).rstrip(".py"),
         help="the name of this experiment")
@@ -25,8 +25,6 @@ def parse_args():
         help="if toggled, `torch.backends.cudnn.deterministic=False`")
     parser.add_argument("--cuda", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="if toggled, cuda will be enabled by default")
-    parser.add_argument("--capture-video", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
-        help="whether to capture videos of the agent performances (check out `videos` folder)")
 
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="CartPole-v1",
@@ -35,10 +33,8 @@ def parse_args():
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
         help="the learning rate of the optimizer")
-    parser.add_argument("--num-envs", type=int, default=4,
-        help="the number of parallel game environments")
     parser.add_argument("--num-steps", type=int, default=128,
-        help="the number of steps to run in each environment per policy rollout")
+        help="the number of steps to run per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
     parser.add_argument("--gamma", type=float, default=0.99,
@@ -64,61 +60,65 @@ def parse_args():
     parser.add_argument("--target-kl", type=float, default=None,
         help="the target KL divergence threshold")
     args = parser.parse_args()
-    args.batch_size = int(args.num_envs * args.num_steps)
+    args.batch_size = int(args.num_steps) # If using parallel environments, this would be the num_steps * num_envs
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    # fmt: on
     return args
 
+device="cpu" # This is here so that the unit testing works correctly, variable will be overwritten if this is the main script
 
-def make_env(env_id, seed, idx, capture_video, run_name):
-    def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id)
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+# If, at a later date, environment can't be registered with gym, this will need to be changed.
+def make_env(env_id, seed):
+    env = gym.make(env_id)
+    env = gym.wrappers.RecordEpisodeStatistics(env)
+    env.action_space.seed(seed)
+    env.observation_space.seed(seed)
+    return env
+
+# This is a modified version of the Categorical distribution from PyTorch. It allows for masking of the logits. Masked logits will be given a logprob of -1e+8, which corresponds to a probability of 0.
+class CategoricalMasked(Categorical):
+    def __init__(self, probs=None, logits=None, validate_args=None, mask=None):
+        self.mask = mask
+        if self.mask is None:
+            super(CategoricalMasked, self).__init__(probs, logits, validate_args)
         else:
-            env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.action_space.seed(seed)
-        env.observation_space.seed(seed)
-        return env
+            self.mask = mask.type(torch.BoolTensor).to(device)
+            logits = torch.where(mask, logits, torch.tensor(-1e+8).to(device))
+            logits = logits.flatten()
+            super(CategoricalMasked, self).__init__(probs, logits, validate_args)
 
-    return thunk
+    def entropy(self):
+        if self.mask is None:
+            return super(CategoricalMasked, self).entropy()
+        p_log_p = self.logits * self.probs
+        p_log_p = torch.where(self.mask, p_log_p, torch.tensor(0.).to(device))
+        return -p_log_p.sum(-1)
 
-
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
-
-
+# The agent class contains the actor and critic network along with functions for obtainining actions, action logprobs and values. Masking is also handled between this and the categoricalmasked distribution.
 class Agent(nn.Module):
-    def __init__(self, envs):
+    def __init__(self, actor, critic) -> None:
         super().__init__()
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 1), std=1.0),
-        )
-        self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
-        )
-
-    def get_value(self, x):
-        return self.critic(x)
-
-    def get_action_and_value(self, x, action=None):
+        self.critic = critic
+        self.actor = actor
+    
+    def get_value(self, x, mask=None):
+        # Value function is done this way because it is easier to do masking this way. The value network is
+        # just the action value network with a sum reduction over the actions anyway.
+        action_values = self.critic(x)
+        if mask is not None:
+            action_values = action_values[mask]
+        if isinstance(env.observation_space, gym.spaces.Sequence):
+            value = torch.sum(action_values)
+        else:
+            value = action_values
+        return value
+        
+    def get_action_and_value(self, x, mask=None, action=None):
         logits = self.actor(x)
-        probs = Categorical(logits=logits)
+        probs = CategoricalMasked(logits=logits, mask=mask)
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x)
-
+        return action, probs.log_prob(action), probs.entropy(), self.get_value(x, mask)
+    
 
 if __name__ == "__main__":
     args = parse_args()
@@ -135,43 +135,75 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu") # If a GPU is available, use it. I have not tested this code on a GPU yet.
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
-    )
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    env = make_env(args.env_id, args.seed)
 
-    agent = Agent(envs).to(device)
+    # Actor and critic network setup
+    if isinstance(env.observation_space, gym.spaces.Sequence):
+        in_features = np.array(env.observation_space.feature_space.shape).prod()
+    else:
+        in_features = np.array(env.observation_space.shape).prod()
+
+    if isinstance(env.action_space, gym.spaces.Box):
+        out_features = np.array(env.action_space.shape).prod()
+    else:
+        out_features = env.action_space.n
+
+    if out_features == 1:
+        actor_network = ParallelMultilayerPerceptron(3, 64, [64], 0.01)
+        critic_network = ParallelMultilayerPerceptron(3, 64, [64], 1.0)
+    else:
+        actor_network = nn.Sequential(
+            layer_init(nn.Linear(in_features, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, out_features), std=0.01),
+        )  
+        critic_network = nn.Sequential(
+            layer_init(nn.Linear(np.array(in_features).prod(), 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 1), std=1.0),
+        )
+
+    agent = Agent(actor=actor_network, critic=critic_network)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
-    # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
-    actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    # Storage setup
+    actions = torch.zeros(args.num_steps)
+    logprobs = torch.zeros(args.num_steps)
+    rewards = torch.zeros(args.num_steps)
+    dones = torch.zeros(args.num_steps)
+    values = torch.zeros(args.num_steps)
 
-    # TRY NOT TO MODIFY: start the game
+    # TRY NOT TO MODIFY: start the environment
     global_step = 0
     start_time = time.time()
-    next_obs, _ = envs.reset(seed=args.seed)
-    next_obs = torch.Tensor(next_obs).to(device)
-    next_done = torch.zeros(args.num_envs).to(device)
+    next_obs, info = env.reset(seed=args.seed)
+    next_obs = torch.tensor(next_obs, dtype=torch.float32).to(device)
+    next_done = torch.tensor(False, dtype=torch.float32).to(device)
     num_updates = args.total_timesteps // args.batch_size
 
     for update in range(1, num_updates + 1):
+
+        obs = [] # obs is a list rather than a tensor because the obs space is not fixed dimension.
+
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates
-            lrnow = frac * args.learning_rate
-            optimizer.param_groups[0]["lr"] = lrnow
+            lr_now = args.learning_rate * frac
+            optimizer.param_groups[0]["lr"] = lr_now
 
         for step in range(0, args.num_steps):
-            global_step += 1 * args.num_envs
-            obs[step] = next_obs
+            global_step += 1
+            if next_done:
+                next_obs, info  = env.reset(seed=args.seed)
+                next_obs = torch.tensor(next_obs).to(device)
+            obs.append(next_obs)
             dones[step] = next_done
 
             # ALGO LOGIC: action logic
@@ -180,20 +212,21 @@ if __name__ == "__main__":
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
-
-            # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, terminated, truncated, info = envs.step(action.cpu().numpy())
-            done = [x or y for (x,y) in zip(terminated, truncated)]
+        
+            # TRY NOT TO MODIFY: execute the environment and log data.
+            next_obs, reward, terminated, truncated, info = env.step(action.cpu().numpy())
+            done = terminated or truncated
             rewards[step] = torch.tensor(reward).to(device).view(-1)
-            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
+            next_obs, next_done = torch.tensor(next_obs).to(device), torch.tensor(done, dtype=torch.float32).to(device)
 
-            if "final_info" in info.keys():
-                print(f"global_step={global_step}, episodic_return={info['final_info'][0]['episode']['r'].item()}")
-                writer.add_scalar("charts/episodic_return", info['final_info'][0]["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", info['final_info'][0]["episode"]["l"], global_step)
+            if "episode" in info.keys():
+                print(f"global_step={global_step}, episodic_return={info['episode']['r'].item()}")
+                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
-        # bootstrap value if not done
+        # bootstrap reward if not done.
         with torch.no_grad():
+            assert rewards.dtype == torch.float32
             next_value = agent.get_value(next_obs).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
@@ -208,15 +241,12 @@ if __name__ == "__main__":
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
             returns = advantages + values
 
-        # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
-        b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_values = values.reshape(-1)
+        # Not necessary to flatten the batch with only one environment.
 
-        # Optimizing the policy and value network
+        # Need to pad the observations 
+        obs = torch.nn.utils.rnn.pad_sequence(obs, batch_first=True, padding_value=-1)
+
+        # Optimizaing the policy and value network
         b_inds = np.arange(args.batch_size)
         clipfracs = []
         for epoch in range(args.update_epochs):
@@ -224,43 +254,41 @@ if __name__ == "__main__":
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
-
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
-                logratio = newlogprob - b_logprobs[mb_inds]
+                if isinstance(env.observation_space, gym.spaces.Sequence):
+                    mask = obs.ne(-1).all(-1).unsqueeze(-1)
+                else:
+                    mask = None
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(obs[mb_inds], mask, actions.long()[mb_inds])
+                logratio = newlogprob - logprobs[mb_inds]
                 ratio = logratio.exp()
-
                 with torch.no_grad():
-                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
+                    # calculate approx_Kl
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
 
-                mb_advantages = b_advantages[mb_inds]
+                mb_advantages = advantages[mb_inds]
                 if args.norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
                 # Policy loss
                 pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1.0 - args.clip_coef, 1.0 + args.clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # Value loss
                 newvalue = newvalue.view(-1)
                 if args.clip_vloss:
-                    v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
-                    v_clipped = b_values[mb_inds] + torch.clamp(
-                        newvalue - b_values[mb_inds],
-                        -args.clip_coef,
-                        args.clip_coef,
-                    )
-                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
-                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+                    vloss_unclipped = (newvalue - returns[mb_inds]) ** 2
+                    v_clipped = values[mb_inds] + torch.clamp(newvalue - values[mb_inds], -args.clip_coef, args.clip_coef)
+                    vloss_clipped = (v_clipped - returns[mb_inds]) ** 2
+                    v_loss_max = torch.max(vloss_unclipped, vloss_clipped)
                     v_loss = 0.5 * v_loss_max.mean()
                 else:
-                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                    v_loss = 0.5 * ((returns[mb_inds] - newvalue) ** 2).mean()
 
                 entropy_loss = entropy.mean()
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                loss = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -270,8 +298,8 @@ if __name__ == "__main__":
             if args.target_kl is not None:
                 if approx_kl > args.target_kl:
                     break
-
-        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
+        
+        y_pred, y_true = returns.cpu().numpy(), values.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
@@ -287,5 +315,5 @@ if __name__ == "__main__":
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-    envs.close()
+    env.close()
     writer.close()

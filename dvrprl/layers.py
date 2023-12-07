@@ -1,4 +1,10 @@
 import torch
+import numpy as np
+
+def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
 
 class ParallelEmbeddingLayer(torch.nn.Module):
     """
@@ -15,10 +21,10 @@ class ParallelEmbeddingLayer(torch.nn.Module):
         super(ParallelEmbeddingLayer, self).__init__()
         for i in range(len(hidden_layers)):
             if i == 0:
-                self.hidden_layers = torch.nn.ModuleList([torch.nn.Linear(in_features, hidden_layers[i])])
+                self.hidden_layers = torch.nn.ModuleList([layer_init(torch.nn.Linear(in_features, hidden_layers[i]))])
             else:
-                self.hidden_layers.append(torch.nn.Linear(hidden_layers[i - 1], hidden_layers[i]))
-        self.output_layer = torch.nn.Linear(hidden_layers[-1], out_features)
+                self.hidden_layers.append(layer_init(torch.nn.Linear(hidden_layers[i - 1], hidden_layers[i])))
+        self.output_layer = layer_init(torch.nn.Linear(hidden_layers[-1], out_features))
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """
@@ -31,8 +37,8 @@ class ParallelEmbeddingLayer(torch.nn.Module):
 
         """
         for layer in self.hidden_layers:
-            input = torch.nn.functional.relu(layer(input))
-        embedding = self.output_layer(input)
+            input = torch.nn.functional.tanh(layer(input))
+        embedding = torch.nn.functional.tanh(self.output_layer(input))
         return embedding
     
 class TransformerLayer(torch.nn.Module):

@@ -29,27 +29,15 @@ class ParallelMultilayerPerceptron(torch.nn.Module):
         self.embedding_layer = ParallelEmbeddingLayer(
             in_features, embedding_dim, hidden_layers
         )
+        self.linear = torch.nn.Linear(in_features=embedding_dim, out_features=1)
         if mode == "value":
-            self.final_stack = torch.nn.ModuleList(
-                modules=[
-                    torch.nn.Linear(in_features=embedding_dim, out_features=1),
-                    Reduce(pattern="b n d -> b d", reduction="sum"),
-                ]
-            )
+            self.final_layer = Reduce(pattern="b n d -> b d", reduction="sum")
         elif mode == "action-value":
-            self.final_stack = torch.nn.ModuleList(
-                modules=[torch.nn.Linear(in_features=embedding_dim, out_features=1)]
-            )
+            self.final_layer = None
         elif mode == "policy":
-            self.final_stack = torch.nn.ModuleList(
-                [
-                    torch.nn.Linear(in_features=embedding_dim, out_features=1),
-                    torch.nn.ReLU(),
-                    torch.nn.LogSoftmax(dim=1),
-                ]
-            )
+            self.final_layer = torch.nn.LogSoftmax(dim=1)
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """
         forward pass of the network.
 
@@ -64,8 +52,11 @@ class ParallelMultilayerPerceptron(torch.nn.Module):
 
         """
         embedding = self.embedding_layer(input)
-        for layer in self.final_stack:
-            embedding = layer(embedding)
+        embedding = self.linear(embedding)
+        if mask is not None:
+            mask_value = torch.tensor(torch.finfo(embedding.dtype).min, dtype=embedding.dtype)
+            embedding = torch.where(mask, embedding, mask_value)
+        embedding = self.final_layer(embedding)
         return embedding
 
 
@@ -237,7 +228,7 @@ class RecurrentNeuralNetwork(torch.nn.Module):
                 ]
             )
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         forward pass of the network.
 
